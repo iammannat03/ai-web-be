@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from scipy.special import softmax
 import torch
+import tempfile
 
 
 # Load environment variables
@@ -23,7 +24,18 @@ except ImportError:
     warnings.warn("Langflow provides a function to help you upload files to the flow. Please install langflow to use it.")
     upload_file = None
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+# Add this after creating the FastAPI app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 
 # Load configuration from environment variables
 BASE_API_URL = os.getenv("BASE_API_URL")
@@ -226,3 +238,37 @@ async def predict_sentiment(request: SentimentRequest):
         return sentiment_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error analyzing sentiment: {e}")
+
+
+# image captioning
+from PIL import Image
+from transformers import BlipProcessor, BlipForConditionalGeneration
+
+processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+
+def generate_caption(image_path):
+    image = Image.open(image_path)
+    inputs = processor(image, return_tensors="pt")
+    outputs = model.generate(**inputs)
+    caption = processor.decode(outputs[0], skip_special_tokens=True)
+    return caption
+
+@app.post("/generate-caption")
+async def generate_caption_endpoint(file: UploadFile = File(...)):
+    try:
+        # Create a temporary file to save the uploaded image
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            contents = await file.read()
+            temp_file.write(contents)
+            temp_file.flush()
+            
+            # Generate caption using the temporary file
+            caption = generate_caption(temp_file.name)
+            
+            # Clean up the temporary file
+            os.unlink(temp_file.name)
+            
+        return {"caption": caption}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating caption: {e}")
