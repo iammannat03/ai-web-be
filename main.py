@@ -2,6 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from scipy.special import softmax
+import torch
+
 
 # Load environment variables
 load_dotenv()
@@ -131,9 +135,16 @@ class ChatRequest(BaseModel):
 @app.post("/rag-chatbot/chat")
 async def chat_endpoint(chat_request: ChatRequest):
     try:
+        print(f"Using FLOW_ID: {FLOW_ID}")
+        print(f"Using ENDPOINT: {ENDPOINT}")
+        
+        # Use FLOW_ID directly since ENDPOINT is empty
+        endpoint = FLOW_ID
+        print(f"Using endpoint: {endpoint}")
+        
         response = run_flow(
             message=chat_request.message,
-            endpoint=ENDPOINT or FLOW_ID,
+            endpoint=endpoint,  # Use FLOW_ID directly
             output_type=chat_request.output_type,
             input_type=chat_request.input_type,
             tweaks=chat_request.tweaks or TWEAKS,
@@ -179,3 +190,39 @@ async def upload_and_chat_endpoint(request: FileUploadRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Move this to the top of your file, after imports
+print("Loading sentiment analysis model... This may take a few minutes...")
+MODEL = f"cardiffnlp/twitter-roberta-base-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+print("Model loaded successfully!")
+
+# Function to perform sentiment analysis using Roberta
+def analyze_sentiment(text):
+    encoded_text = tokenizer(text, return_tensors='pt')
+    with torch.no_grad():
+        output = model(**encoded_text).logits
+        
+    scores = output[0].detach().cpu().numpy()  # Move to CPU for numpy
+    scores = softmax(scores)
+    
+    sentiment_labels = ['negative', 'neutral', 'positive']
+    sentiment = sentiment_labels[scores.argmax()]
+    sentiment_score = float(scores.max())  # Convert numpy.float32 to Python float
+    
+    return {
+        "sentiment": sentiment,
+        "score": sentiment_score  # This will now be a regular Python float
+    }
+
+# Create a Pydantic model for the request
+class SentimentRequest(BaseModel):
+    text: str
+
+@app.post("/predict")
+async def predict_sentiment(request: SentimentRequest):
+    try:
+        sentiment_result = analyze_sentiment(request.text)
+        return sentiment_result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error analyzing sentiment: {e}")
