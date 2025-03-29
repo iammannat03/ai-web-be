@@ -2,10 +2,11 @@ from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, BlipProcessor, BlipForConditionalGeneration
 from scipy.special import softmax
 import torch
 import tempfile
+from PIL import Image
 
 
 # Load environment variables
@@ -202,29 +203,35 @@ async def upload_and_chat_endpoint(request: FileUploadRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Move this to the top of your file, after imports
+# Sentiment Analysis models (rename these)
 print("Loading sentiment analysis model... This may take a few minutes...")
 MODEL = f"cardiffnlp/twitter-roberta-base-sentiment"
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+sentiment_tokenizer = AutoTokenizer.from_pretrained(MODEL)
+sentiment_model = AutoModelForSequenceClassification.from_pretrained(MODEL)
 print("Model loaded successfully!")
 
-# Function to perform sentiment analysis using Roberta
+# Image Captioning models (rename these)
+print("Loading image captioning model... This may take a few minutes...")
+caption_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+caption_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+print("Image captioning model loaded successfully!")
+
+# Update the analyze_sentiment function to use the renamed models
 def analyze_sentiment(text):
-    encoded_text = tokenizer(text, return_tensors='pt')
+    encoded_text = sentiment_tokenizer(text, return_tensors='pt')
     with torch.no_grad():
-        output = model(**encoded_text).logits
+        output = sentiment_model(**encoded_text).logits
         
-    scores = output[0].detach().cpu().numpy()  # Move to CPU for numpy
+    scores = output[0].detach().cpu().numpy()
     scores = softmax(scores)
     
     sentiment_labels = ['negative', 'neutral', 'positive']
     sentiment = sentiment_labels[scores.argmax()]
-    sentiment_score = float(scores.max())  # Convert numpy.float32 to Python float
+    sentiment_score = float(scores.max())
     
     return {
         "sentiment": sentiment,
-        "score": sentiment_score  # This will now be a regular Python float
+        "score": sentiment_score
     }
 
 # Create a Pydantic model for the request
@@ -239,19 +246,12 @@ async def predict_sentiment(request: SentimentRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error analyzing sentiment: {e}")
 
-
-# image captioning
-from PIL import Image
-from transformers import BlipProcessor, BlipForConditionalGeneration
-
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-
+# Update the generate_caption function to use the renamed models
 def generate_caption(image_path):
     image = Image.open(image_path)
-    inputs = processor(image, return_tensors="pt")
-    outputs = model.generate(**inputs)
-    caption = processor.decode(outputs[0], skip_special_tokens=True)
+    inputs = caption_processor(image, return_tensors="pt")
+    outputs = caption_model.generate(**inputs)
+    caption = caption_processor.decode(outputs[0], skip_special_tokens=True)
     return caption
 
 @app.post("/generate-caption")
